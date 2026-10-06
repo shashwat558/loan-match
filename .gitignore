@@ -2,3 +2,12 @@
 node_modules/
 .serverless/
 __pycache__/
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+*.pyc
+venv/
+.venv/
+npm-debug.log*

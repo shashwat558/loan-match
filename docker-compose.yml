@@ -14,6 +14,7 @@ services:
       - N8N_PORT=5678
       - N8N_PROTOCOL=http
       - N8N_RUNNERS_ENABLED=true
+      - NODE_FUNCTION_ALLOW_BUILTIN=crypto
     volumes:
      - n8n_data:/home/node/.n8n
     depends_on:

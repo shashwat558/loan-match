@@ -1,0 +1,78 @@
+service: loan_engine
+useDotenv: true
+
+plugins:
+  - serverless-python-requirements
+
+custom:
+   pythonRequirements:
+    dockerizePip: true
+    slim: true
+    noDeploy: [boto3, botocore]
+
+provider:
+  name: aws
+  runtime: python3.11
+  region: ap-south-1
+  stage: ${opt:storage, 'dev'}
+  memorySize: 256
+  httpApi:
+    cors: true
+    disableDefaultEndpoint: false
+    environment:
+      DB_HOST: ${env:DB_HOST}
+      DB_PORT: ${env:DB_PORT, '5432'}
+      DB_NAME: ${env:DB_NAME}
+      DB_USER: ${env:DB_USER}
+      DB_PASSWORD: ${env:DB_PASSWORD}
+      UPLOAD_BUCKET: ${env:UPLOAD_BUCKET}
+      N8N_WEBHOOK_URL: ${env:N8N_WEBHOOK_URL}
+  s3:
+    uploadsBucket:
+      name: ${env:UPLOAD_BUCKET}
+      corsConfiguration:
+        CorsRules:
+          - AllowedOrigins: ['*']
+            AllowedMethods: [PUT]
+            AllowedHeaders: ["*"]
+            MaxAge: 3000
+  iam:
+    role:
+      statements:
+          - Effect: Allow
+            Action: [s3:PutObject, s3:GetObject]
+            Resource: arn:aws:s3:::${env:UPLOAD_BUCKET}/uploads/*
+package:
+  patterns:
+    - '!node_modules/**'
+    - '!ui/**'
+    - '!n8n/**'
+    - '!sql/**'
+    - '!*.csv'
+    - '!.env'
+    - '!test_*.py'
+
+functions:
+  processCsv:
+    handler: lambdas/process_csv/handler.py
+    timeout: 300
+    memorySize: 512
+    events:
+      - s3:
+          bucket: uploadsBucket
+          event: s3:ObjectCreated:*
+          rules:
+            - prefix: uploads/
+            - suffix: .csv
+  getUploadUrl:
+    handler: lambdas/get_upload_url/handler.py
+    timeout: 15
+    events:
+      - httpApi:
+          path: /upload-url
+          method: get
+
+outputs:
+  UploadEndpoint:
+    Value:
+      Fn::Sub: "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/upload-url"

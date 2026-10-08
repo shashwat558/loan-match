@@ -91,7 +91,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const rows = $input.all()\n  .map(i => i.json)\n  .filter(r => r.match_id !== undefined);\n\nif (rows.length === 0) {\n  return [];   // nothing to send, the workflow stops here\n}\n\n// Group matches by user\nconst byUser = {};\nfor (const r of rows) {\n  if (!byUser[r.user_id]) {\n    byUser[r.user_id] = { user_id: r.user_id, name: r.name, matches: [] };\n  }\n  byUser[r.user_id].matches.push(r);\n}\n\nconst testInboxes = [\n  'jainshashwat528+one@gmail.com',\n  'jainshashwat528+two@gmail.com',\n  'jainshashwat528+three@gmail.com',\n];\n\nconst out = [];\nObject.values(byUser).forEach((u, idx) => {\n  const lines = u.matches.map((m, i) =>\n    `${i + 1}. ${m.product_name} (${m.source}): ${m.interest_rate}% interest`\n  ).join('\\n');\n\n  const body =\n`Hi ${u.name},\n\nBased on your profile, you may qualify for these personal loans:\n\n${lines}\n\nThese are indicative matches. Please check each lender's site for final terms.\n\nRegards,\nEligiFlow`;\n\n  out.push({\n    json: {\n      user_id: u.user_id,\n      to: testInboxes[idx % testInboxes.length],\n      subject: `You may qualify for ${u.matches.length} personal loan offer(s)`,\n      body,\n      match_ids: u.matches.map(m => Number(m.match_id)),\n    },\n  });\n});\n\nreturn out;"
+        "jsCode": "const rows = $input.all()\n  .map(i => i.json)\n  .filter(r => r.match_id !== undefined);\n\nif (rows.length === 0) {\n  return [];   // nothing to send, the workflow stops here\n}\n\n// Group matches by user\nconst byUser = {};\nfor (const r of rows) {\n  if (!byUser[r.user_id]) {\n    byUser[r.user_id] = { user_id: r.user_id, name: r.name, matches: [] };\n  }\n  byUser[r.user_id].matches.push(r);\n}\n\nconst testInboxes = [\n  'jainshashwat528+one@gmail.com',\n  'jainshashwat528+two@gmail.com',\n  'jainshashwat528+three@gmail.com',\n];\n\nconst out = [];\nObject.values(byUser).forEach((u, idx) => {\n  const lines = u.matches.map((m, i) =>\n    `${i + 1}. ${m.product_name} (${m.source}): ${m.interest_rate}% interest`\n  ).join('\\n');\n\n  const body =\n`Hi ${u.name},\n\nBased on your profile, you may qualify for these personal loans:\n\n${lines}\n\nThese are indicative matches. Please check each lender's site for final terms.\n\nRegards,\nloan-match`;\n\n  out.push({\n    json: {\n      user_id: u.user_id,\n      to: testInboxes[idx % testInboxes.length],\n      subject: `You may qualify for ${u.matches.length} personal loan offer(s)`,\n      body,\n      match_ids: u.matches.map(m => Number(m.match_id)),\n    },\n  });\n});\n\nreturn out;"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -163,7 +163,7 @@
     "callerPolicy": "workflowsFromSameOwner",
     "availableInMCP": false
   },
-  "versionId": "290ffc20-1687-4ecd-91f5-1316edeaef27",
+  "versionId": "de4dd8d7-ba90-465f-a3fe-7e4bc92e5f6b",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "30cef0ee38c4b2942281c82c0b9c24fe60e29ba5193189a7755c4f65a576681d"

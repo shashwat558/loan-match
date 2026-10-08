@@ -1,0 +1,259 @@
+{
+  "name": "workflow A",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst text = ($json.text || '').slice(0, 8000);\n\nif (text.length < 200) return [];\n\nconst system = `You extract personal loan products from web page text.\nReturn ONLY JSON: {\"products\":[{...}]}. Rules:\n- One object per distinct personal loan product. Max 5. Never invent values.\n- If the page is a blog, news article or not about a specific loan offer, return {\"products\":[]}.\n- Fields: product_name (string), interest_rate (number, lowest annual % stated, else null),\n  min_income (number, monthly INR, else null), min_credit_score (integer, else null),\n  max_credit_score (integer, else null), min_age (integer, else null), max_age (integer, else null),\n  employment_status (array using ONLY: \"salaried\",\"self-employed\",\"business\"; null if not stated),\n  criteria_text (string, the eligibility wording copied briefly, max 300 chars).\n- Convert yearly income to monthly. Map \"self employed professional\" to \"self-employed\"; \"business owner\" or \"entrepreneur\" to \"business\".\n- If a value is not clearly stated, use null.`;\n\nreturn {\n  json: {\n    source: $json.source,\n    source_url: $json.source_url,\n    criteria_hash: crypto.createHash('sha256').update(text).digest('hex'),\n    system,\n    user: text,\n  },\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        0
+      ],
+      "id": "c3d63dec-2638-498e-bfc8-09b2e77f0497",
+      "name": "Prepare Prompt"
+    },
+    {
+      "parameters": {
+        "jsCode": "const domains = ['sbi.bank.in', 'bankbazaar.com', 'paisabazaar.com'];\nreturn domains.map(d => ({ json: { domain: d } }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "id": "ba669371-4451-435b-a1c5-295ae4788e9f",
+      "name": "Domains"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO loan_products\n  (product_name, source, source_url, interest_rate, min_income, min_credit_score,\n   max_credit_score, min_age, max_age, employment_status, criteria_text, criteria_hash,\n   is_active, last_crawled_at)\nVALUES\n  ($1, $2, $3,\n   NULLIF(NULLIF($4, 'null'), '')::numeric,\n   NULLIF(NULLIF($5, 'null'), '')::numeric,\n   NULLIF(NULLIF($6, 'null'), '')::int,\n   NULLIF(NULLIF($7, 'null'), '')::int,\n   NULLIF(NULLIF($8, 'null'), '')::int,\n   NULLIF(NULLIF($9, 'null'), '')::int,\n   NULLIF(NULLIF($10, 'null'), '')::text[],\n   $11, $12, true, now())\nON CONFLICT (product_name, source) DO UPDATE SET\n  source_url        = EXCLUDED.source_url,\n  interest_rate     = EXCLUDED.interest_rate,\n  min_income        = EXCLUDED.min_income,\n  min_credit_score  = EXCLUDED.min_credit_score,\n  max_credit_score  = EXCLUDED.max_credit_score,\n  min_age           = EXCLUDED.min_age,\n  max_age           = EXCLUDED.max_age,\n  employment_status = EXCLUDED.employment_status,\n  criteria_text     = EXCLUDED.criteria_text,\n  criteria_hash     = EXCLUDED.criteria_hash,\n  is_active         = true,\n  last_crawled_at   = now();",
+        "options": {
+          "queryReplacement": "={{ $json.product_name }}, {{ $json.source }}, {{ $json.source_url }}, {{ $json.interest_rate }}, {{ $json.min_income }}, {{ $json.min_credit_score }}, {{ $json.max_credit_score }}, {{ $json.min_age }}, {{ $json.max_age }}, {{ $json.employment_status }}, {{ $json.criteria_text }}, {{ $json.criteria_hash }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1456,
+        320
+      ],
+      "id": "d0b1dcb7-7035-47b4-9b27-e729b7746402",
+      "name": "Execute a SQL query",
+      "credentials": {
+        "postgres": {
+          "id": "zPmpAwiR0hfaBlad",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const meta = $('Prepare Prompt').item.json;\nlet products = [];\ntry {\n  products = JSON.parse($json.choices[0].message.content).products || [];\n} catch (e) {\n  return [];\n}\n\nconst ALLOWED = ['salaried', 'self-employed', 'business'];\nconst num = v => (v === null || v === undefined || v === '' || isNaN(Number(v))) ? null : Number(v);\nconst int = v => num(v) === null ? null : Math.round(num(v));\n\nconst out = [];\nfor (const p of products) {\n  const name = String(p.product_name || '').trim().slice(0, 150);\n  if (!name) continue;\n\n  const rate = num(p.interest_rate);\n  if (rate !== null && (rate < 1 || rate > 50)) continue;\n\n  const emp = Array.isArray(p.employment_status)\n    ? p.employment_status.map(s => String(s).toLowerCase()).filter(s => ALLOWED.includes(s))\n    : [];\n\n  out.push({ json: {\n    product_name: name,\n    source: meta.source,\n    source_url: meta.source_url,\n    interest_rate: rate,\n    min_income: num(p.min_income),\n    min_credit_score: int(p.min_credit_score),\n    max_credit_score: int(p.max_credit_score),\n    min_age: int(p.min_age),\n    max_age: int(p.max_age),\n    employment_status: emp.length ? `{${emp.join(',')}}` : null,\n    criteria_text: String(p.criteria_text || '').slice(0, 300),\n    criteria_hash: meta.criteria_hash,\n  }});\n}\nreturn out;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1232,
+        320
+      ],
+      "id": "b9052749-df0c-40a3-bb99-9785d7554b9c",
+      "name": "Code in JavaScript3"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer gedoEjLIbv9Ld"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"qwen/qwen3.8-27b\",\n  \"temperature\": 0,\n  \"reasoning_effort\": \"none\",\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    { \"role\": \"system\", \"content\": {{ JSON.stringify($json.system) }} },\n    { \"role\": \"user\",   \"content\": {{ JSON.stringify($json.user) }} }\n  ]\n}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 300
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1120,
+        0
+      ],
+      "id": "4876654e-f4d1-46e3-ba7b-ff85f85a920c",
+      "name": "HTTP Request1",
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const domain = $('Domains').item.json.domain;\nconst results = $json.results || [];\n\nreturn results\n  .filter(r => (r.text || '').length >= 200)\n  .map(r => ({\n    json: { source: domain, source_url: r.url, title: r.title, text: r.text },\n  }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ],
+      "id": "e0b4f550-80b2-4778-9a69-4fd23bb29452",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.exa.ai/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer a2d98578-0992-4726-b0a1-462a8eb352f9"
+            },
+            {
+              "name": "x-api-key",
+              "value": "a2d98578-0992-4726-b0a1-462a8eb352f9"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={   \"query\": \"personal loan interest rate eligibility minimum income credit score\",   \"type\": \"auto\",   \"numResults\": 3,   \"includeDomains\": [\"{{ $json.domain }}\"],   \"contents\": { \"text\": { \"maxCharacters\": 8000 } } }",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        448,
+        0
+      ],
+      "id": "cc83e6d2-d85b-4453-9adc-0d4ee1edfa4d",
+      "name": "HTTP Request",
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 18
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "0521620d-0568-476a-ae15-052b3839fac5",
+      "name": "Schedule Trigger"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Domains": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Prompt": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript3": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Prepare Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Domains",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "eacd1321-249c-4de8-8f0e-6d36c4a80f5c",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "30cef0ee38c4b2942281c82c0b9c24fe60e29ba5193189a7755c4f65a576681d"
+  },
+  "nodeGroups": [],
+  "id": "9VbKCYdbZ5IEa1rP",
+  "tags": []
+}

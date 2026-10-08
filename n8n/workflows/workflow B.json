@@ -1,0 +1,347 @@
+{
+  "name": "workflow B",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "loan-match",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "693657dd-fefb-446c-a6ad-c7ecdefec67a",
+      "name": "Webhook",
+      "webhookId": "50c3d6b0-c6cd-417c-9fe6-36befcc385d5"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO matches (user_id, product_id, match_stage, score)\nSELECT user_id, product_id, 'sql', score\nFROM (\n  SELECT u.user_id, p.product_id,\n         ROUND(100 - COALESCE(p.interest_rate, 20), 2) AS score,\n         ROW_NUMBER() OVER (\n           PARTITION BY u.user_id\n           ORDER BY COALESCE(p.interest_rate, 20) ASC\n         ) AS rn\n  FROM users u\n  JOIN loan_products p ON p.is_active\n  WHERE u.batch_id = $1::uuid AND NOT p.needs_llm_check\n    AND (p.min_income       IS NULL OR u.monthly_income >= p.min_income)\n    AND (p.min_credit_score IS NULL OR u.credit_score  >= p.min_credit_score)\n    AND (p.max_credit_score IS NULL OR u.credit_score  <= p.max_credit_score)\n    AND (p.min_age          IS NULL OR u.age >= p.min_age)\n    AND (p.max_age          IS NULL OR u.age <= p.max_age)\n    AND (p.employment_status IS NULL OR lower(u.employment_status) = ANY(p.employment_status))\n) ranked\nWHERE rn <= 3\nON CONFLICT (user_id, product_id) DO NOTHING\nRETURNING match_id, user_id, product_id;",
+        "options": {
+          "queryReplacement": "={{ $json.body.batch_id }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        224,
+        0
+      ],
+      "id": "b288496d-025a-4124-9b71-1364b567a6db",
+      "name": "Execute a SQL query",
+      "credentials": {
+        "postgres": {
+          "id": "zPmpAwiR0hfaBlad",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://divided-swipe-travel.ngrok-free.dev/webhook/notify",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "batch_id",
+              "value": "={{ $('Code in JavaScript3').first().json.batch_id }}"
+            },
+            {
+              "name": "match_count",
+              "value": "={{ $('Code in JavaScript3').first().json.match_count }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2240,
+        0
+      ],
+      "id": "2dc316b2-6ee8-4d09-8a10-5df99d6c24fa",
+      "name": "HTTP Request",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "02de1b01-4372-44b6-a61d-2ec80944496c",
+              "leftValue": "={{ $json.product_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        896,
+        0
+      ],
+      "id": "ceb591b0-7f71-43fd-bc1b-be7238fec210",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "jsCode": "const metas = $('Build LLM prompt').all();\nconst UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nconst pairs = [];\n\n$input.all().forEach((item, i) => {\n  const meta = metas[i].json;\n  let results = [];\n  try {\n    results = JSON.parse(item.json.choices[0].message.content).results || [];\n  } catch (e) {\n    return;   // bad JSON: no LLM matches for this product\n  }\n  for (const r of results) {\n    if (r.eligible === true && meta.idMap[r.id]) {\n      for (const uid of meta.idMap[r.id]) {\n        if (UUID.test(uid)) pairs.push({ user_id: uid, product_id: Number(meta.product_id) });\n      }\n    }\n  }\n});\n\nreturn [{ json: { pairs } }];   // always exactly one item"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1568,
+        -208
+      ],
+      "id": "c43cbf3c-765e-47bb-a088-f056565cdd98",
+      "name": "Code in JavaScript2"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO matches (user_id, product_id, match_stage, score)\nSELECT x.user_id::uuid, x.product_id, 'llm', 75\nFROM json_to_recordset('{{ JSON.stringify($json.pairs) }}'::json)\n     AS x(user_id text, product_id bigint)\nON CONFLICT (user_id, product_id) DO NOTHING;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1792,
+        -208
+      ],
+      "id": "9240ee71-942e-4182-a739-238ee9066791",
+      "name": "Execute a SQL query2",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "zPmpAwiR0hfaBlad",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst items = $input.all();\n\nconst matchCount = items.filter(item => item.json.match_id !== undefined).length;\nconst batchId = $('Webhook').first().json.body.batch_id;\n\nreturn [\n  {\n    json: {\n      batch_id: batchId,\n      match_count: matchCount,\n    },\n  },\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ],
+      "id": "04008576-97fb-4609-a106-d50dc0763477",
+      "name": "Code in JavaScript3"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT p.product_id, p.product_name, p.criteria_text,\n       (ROUND(u.monthly_income / 25000) * 25000)::int AS income_band,\n       (ROUND(u.credit_score / 50.0) * 50)::int       AS score_band,\n       lower(u.employment_status)                     AS employment,\n       array_agg(u.user_id)                           AS user_ids,\n       count(*)                                       AS users_in_profile\nFROM users u\nJOIN loan_products p ON p.is_active AND p.needs_llm_check\nWHERE u.batch_id = '{{ $('Webhook').first().json.body.batch_id }}'::uuid\n  AND (p.min_income       IS NULL OR u.monthly_income >= p.min_income)\n  AND (p.min_credit_score IS NULL OR u.credit_score  >= p.min_credit_score)\n  AND (p.max_credit_score IS NULL OR u.credit_score  <= p.max_credit_score)\n  AND (p.min_age          IS NULL OR u.age >= p.min_age)\n  AND (p.max_age          IS NULL OR u.age <= p.max_age)\n  AND (p.employment_status IS NULL OR lower(u.employment_status) = ANY(p.employment_status))\nGROUP BY p.product_id, p.product_name, p.criteria_text, 4, 5, 6\nORDER BY users_in_profile DESC\nLIMIT 40;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        672,
+        0
+      ],
+      "id": "2aa1989a-8623-44cb-a0dd-50a3d0a6d4bd",
+      "name": "Fetch LLM candidates",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "zPmpAwiR0hfaBlad",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json);\n\nconst system = `You judge personal loan eligibility.\nReturn ONLY JSON: {\"results\":[{\"id\":\"p1\",\"eligible\":true}]}.\nRules: judge each profile ONLY against the criteria text and the profile fields given.\nIf the profile does not clearly satisfy the criteria, set eligible to false. Include every profile id.`;\n\nconst byProduct = {};\nfor (const r of rows) {\n  if (!byProduct[r.product_id]) {\n    byProduct[r.product_id] = { product_id: r.product_id, name: r.product_name, criteria: r.criteria_text, rows: [] };\n  }\n  byProduct[r.product_id].rows.push(r);\n}\n\nreturn Object.values(byProduct).map(p => {\n  const idMap = {};\n  const profiles = p.rows.map((r, i) => {\n    const id = 'p' + (i + 1);\n    idMap[id] = r.user_ids;\n    return { id, monthly_income: r.income_band, credit_score: r.score_band, employment: r.employment };\n  });\n  return { json: {\n    product_id: p.product_id,\n    system,\n    user: `Product: ${p.name}\\nCriteria: ${p.criteria}\\nProfiles: ${JSON.stringify(profiles)}`,\n    idMap,\n  }};\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        -208
+      ],
+      "id": "ed048325-beca-4552-bd2d-db1484a3a8c8",
+      "name": "Build LLM prompt"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer gsk_7x7iAuG5HVLJR4imkF"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "=json",
+        "bodyParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "jsonBody": "={\n  \"model\": \"qwen/qwen3.8-27b\",\n  \"temperature\": 0,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    { \"role\": \"system\", \"content\": {{ JSON.stringify($json.system) }} },\n    { \"role\": \"user\",   \"content\": {{ JSON.stringify($json.user) }} }\n  ]\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1344,
+        -208
+      ],
+      "id": "c1fd75b5-9e74-452f-b1d3-48648641c53c",
+      "name": "HTTP Request1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a SQL query": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Build LLM prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript2": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a SQL query2": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript3": {
+      "main": [
+        [
+          {
+            "node": "Fetch LLM candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch LLM candidates": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build LLM prompt": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "89db6190-370b-411b-9f40-f0a0c4ad27fd",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "30cef0ee38c4b2942281c82c0b9c24fe60e29ba5193189a7755c4f65a576681d"
+  },
+  "nodeGroups": [],
+  "id": "3GRz47Ul2ecJmB90",
+  "tags": []
+}

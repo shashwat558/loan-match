@@ -1,0 +1,174 @@
+{
+  "name": "workflow C",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "notify",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "14198518-385f-4b42-8f2b-7fc41f9f6809",
+      "name": "Webhook",
+      "webhookId": "656aabd9-a6d7-46e9-a274-e09fe7fbc0d5"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH picked AS (\n  SELECT m.user_id\n  FROM matches m\n  JOIN users u ON u.user_id = m.user_id\n  WHERE u.batch_id = '{{ $('Webhook').first().json.body.batch_id }}'::uuid\n    AND m.notified = false\n  GROUP BY m.user_id\n  ORDER BY count(*) DESC, m.user_id\n  LIMIT 3\n)\nSELECT u.user_id, u.name, u.email, u.monthly_income, u.credit_score,\n       m.match_id, p.product_name, p.source, p.interest_rate, m.score\nFROM picked pk\nJOIN matches m ON m.user_id = pk.user_id AND m.notified = false\nJOIN users u ON u.user_id = m.user_id\nJOIN loan_products p ON p.product_id = m.product_id\nORDER BY u.user_id, m.score DESC;",
+        "options": {
+          "queryReplacement": "={{ $('Webhook').first().json.body.batch_id }}, 3"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        224,
+        0
+      ],
+      "id": "1c9bf386-e7e7-426d-8bc4-b3957d4777df",
+      "name": "Execute a SQL query",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "zPmpAwiR0hfaBlad",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "subject": "={{ $json.subject }}",
+        "body": "={{ $json.body }}",
+        "fromEmail": "jainshashwat528@gmail.com",
+        "toAddresses": [
+          "={{ $json.to }}"
+        ],
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.awsSes",
+      "typeVersion": 1,
+      "position": [
+        464,
+        0
+      ],
+      "id": "f0320722-ddd0-4d40-b0cc-ec7f27d58c83",
+      "name": "Send an email",
+      "credentials": {
+        "aws": {
+          "id": "7jVtneqTs1rZJKxo",
+          "name": "AWS (IAM) account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE matches\nSET notified = true, notified_at = now()\nWHERE match_id = ANY(ARRAY[{{ $('Email_template').item.json.match_ids.join(',') }}]::bigint[]);",
+        "options": {
+          "queryReplacement": "={{ $('Email_template').item.json.match_ids }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        688,
+        0
+      ],
+      "id": "772ff5b4-001d-49d5-9bb4-cd46df9b73e2",
+      "name": "Execute a SQL query1",
+      "credentials": {
+        "postgres": {
+          "id": "zPmpAwiR0hfaBlad",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all()\n  .map(i => i.json)\n  .filter(r => r.match_id !== undefined);\n\nif (rows.length === 0) {\n  return [];   // nothing to send, the workflow stops here\n}\n\n// Group matches by user\nconst byUser = {};\nfor (const r of rows) {\n  if (!byUser[r.user_id]) {\n    byUser[r.user_id] = { user_id: r.user_id, name: r.name, matches: [] };\n  }\n  byUser[r.user_id].matches.push(r);\n}\n\nconst testInboxes = [\n  'jainshashwat528+one@gmail.com',\n  'jainshashwat528+two@gmail.com',\n  'jainshashwat528+three@gmail.com',\n];\n\nconst out = [];\nObject.values(byUser).forEach((u, idx) => {\n  const lines = u.matches.map((m, i) =>\n    `${i + 1}. ${m.product_name} (${m.source}): ${m.interest_rate}% interest`\n  ).join('\\n');\n\n  const body =\n`Hi ${u.name},\n\nBased on your profile, you may qualify for these personal loans:\n\n${lines}\n\nThese are indicative matches. Please check each lender's site for final terms.\n\nRegards,\nEligiFlow`;\n\n  out.push({\n    json: {\n      user_id: u.user_id,\n      to: testInboxes[idx % testInboxes.length],\n      subject: `You may qualify for ${u.matches.length} personal loan offer(s)`,\n      body,\n      match_ids: u.matches.map(m => Number(m.match_id)),\n    },\n  });\n});\n\nreturn out;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        352,
+        -160
+      ],
+      "id": "53f79a56-a717-4804-b73c-027f133ddf59",
+      "name": "Email_template"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a SQL query": {
+      "main": [
+        [
+          {
+            "node": "Email_template",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send an email": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email_template": {
+      "main": [
+        [
+          {
+            "node": "Send an email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a SQL query1": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "290ffc20-1687-4ecd-91f5-1316edeaef27",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "30cef0ee38c4b2942281c82c0b9c24fe60e29ba5193189a7755c4f65a576681d"
+  },
+  "nodeGroups": [],
+  "id": "2enpbuhUkqeYTbA6",
+  "tags": []
+}

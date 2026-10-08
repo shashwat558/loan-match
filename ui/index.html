@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>loan-match</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0; padding: 2rem 1rem; background: #f6f7f9; color: #1a1a1a;
+  }
+  main { max-width: 560px; margin: 0 auto; background: #fff; border-radius: 12px;
+         padding: 2rem; box-shadow: 0 2px 12px rgba(0,0,0,.08); }
+  h1 { margin: 0 0 .25rem; font-size: 1.6rem; }
+  .subtitle { margin: 0 0 1.5rem; color: #555; }
+  #dropzone {
+    border: 2px dashed #9aa3af; border-radius: 10px; padding: 2.5rem 1rem;
+    text-align: center; color: #4b5563; cursor: pointer; user-select: none;
+  }
+  #dropzone:hover, #dropzone.dragover { border-color: #2563eb; background: #eff6ff; }
+  #dropzone:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
+  #fileinfo { margin: 1rem 0 0; font-size: .95rem; display: none; }
+  #error { margin: .75rem 0 0; color: #b91c1c; font-size: .95rem; display: none; }
+  #status { margin: .75rem 0 0; color: #1d4ed8; font-size: .95rem; display: none; }
+  #status.ok { color: #15803d; }
+  button {
+    margin-top: 1.25rem; width: 100%; padding: .8rem; font-size: 1rem;
+    border: none; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer;
+  }
+  button:disabled { background: #9ca3af; cursor: not-allowed; }
+  code { font-size: .85em; word-break: break-all; }
+</style>
+</head>
+<body>
+<main>
+  <h1>loan-match</h1>
+  <p class="subtitle">Upload a user CSV to start the loan-matching pipeline.</p>
+
+  <div id="dropzone" role="button" tabindex="0" aria-label="Choose a CSV file to upload">
+    Drag &amp; drop your CSV here, or click to browse
+  </div>
+  <input type="file" id="fileinput" accept=".csv,text/csv" hidden>
+
+  <p id="fileinfo"></p>
+  <p id="error" role="alert"></p>
+  <p id="status" role="status"></p>
+
+  <button id="upload" disabled>Upload</button>
+</main>
+
+<script>
+const API_URL = "https://mdyividkf5.execute-api.ap-south-1.amazonaws.com";   // e.g. https://abc123.execute-api.ap-south-1.amazonaws.com  (no trailing slash)
+const MAX_SIZE_MB = 100;
+
+const dropzone = document.getElementById("dropzone");
+const fileinput = document.getElementById("fileinput");
+const fileinfo = document.getElementById("fileinfo");
+const errorEl = document.getElementById("error");
+const statusEl = document.getElementById("status");
+const uploadBtn = document.getElementById("upload");
+let file = null;
+
+function fmtSize(bytes) {
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+function showError(msg) {
+  errorEl.textContent = msg;
+  errorEl.style.display = msg ? "block" : "none";
+}
+
+function showStatus(msg, ok) {
+  statusEl.textContent = msg;
+  statusEl.className = ok ? "ok" : "";
+  statusEl.id = "status";
+  statusEl.style.display = msg ? "block" : "none";
+}
+
+function validate(f) {
+  if (!/\.csv$/i.test(f.name)) return "File must have a .csv extension.";
+  if (f.size === 0) return "File is empty.";
+  if (f.size > MAX_SIZE_MB * 1024 * 1024)
+    return "File is larger than " + MAX_SIZE_MB + " MB.";
+  return "";
+}
+
+function selectFile(f) {
+  file = null;
+  uploadBtn.disabled = true;
+  showStatus("");
+  if (!f) { fileinfo.style.display = "none"; showError(""); return; }
+  const err = validate(f);
+  fileinfo.textContent = f.name + " (" + fmtSize(f.size) + ")";
+  fileinfo.style.display = "block";
+  showError(err);
+  if (!err) { file = f; uploadBtn.disabled = false; }
+}
+
+dropzone.addEventListener("click", () => fileinput.click());
+dropzone.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileinput.click(); }
+});
+fileinput.addEventListener("change", () => selectFile(fileinput.files[0] || null));
+["dragenter", "dragover"].forEach((ev) =>
+  dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.add("dragover"); }));
+["dragleave", "drop"].forEach((ev) =>
+  dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); }));
+dropzone.addEventListener("drop", (e) => selectFile(e.dataTransfer.files[0] || null));
+
+uploadBtn.addEventListener("click", async () => {
+  if (!file) return;
+  uploadBtn.disabled = true;
+  showError("");
+  try {
+    showStatus("Requesting upload URL…");
+    const res = await fetch(API_URL + "/upload-url");
+    if (!res.ok) throw new Error("Could not get upload URL (HTTP " + res.status + ").");
+    const { upload_url, batch_id } = await res.json();
+    if (!upload_url || !batch_id) throw new Error("Backend response missing upload_url/batch_id.");
+
+    showStatus("Uploading " + file.name + "…");
+    const put = await fetch(upload_url, {
+      method: "PUT",
+      headers: { "Content-Type": "text/csv" },
+      body: file,
+    });
+    if (put.status !== 200) throw new Error("Upload failed (HTTP " + put.status + ").");
+
+    showStatus("Upload complete. Batch ID: " + batch_id, true);
+  } catch (e) {
+    showStatus("");
+    showError(e.message || "Upload failed.");
+    uploadBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

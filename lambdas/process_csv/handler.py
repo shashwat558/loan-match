@@ -50,7 +50,7 @@ def validate_row(row):
     if not 300 <= score <= 900:
         return None, "credit_score out of range"
     if not 18 <= age <= 100:
-        return None, "age out of range"
+        return None, "age ohttp://localhost:5678/ut of range"
 
     return (user_id, email, name, income, score, employment, age), None
 

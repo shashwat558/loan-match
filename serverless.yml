@@ -1,47 +1,50 @@
-service: loan_engine
+service: loan-engine
+
 useDotenv: true
 
 plugins:
   - serverless-python-requirements
 
 custom:
-   pythonRequirements:
+  pythonRequirements:
     dockerizePip: true
     slim: true
-    noDeploy: [boto3, botocore]
+    noDeploy:
+      - boto3
+      - botocore
 
 provider:
   name: aws
-  runtime: python3.11
+  runtime: python3.12
   region: ap-south-1
-  stage: ${opt:storage, 'dev'}
+  stage: ${opt:stage, 'dev'}
+
   memorySize: 256
+
   httpApi:
     cors: true
-    disableDefaultEndpoint: false
-    environment:
-      DB_HOST: ${env:DB_HOST}
-      DB_PORT: ${env:DB_PORT, '5432'}
-      DB_NAME: ${env:DB_NAME}
-      DB_USER: ${env:DB_USER}
-      DB_PASSWORD: ${env:DB_PASSWORD}
-      UPLOAD_BUCKET: ${env:UPLOAD_BUCKET}
-      N8N_WEBHOOK_URL: ${env:N8N_WEBHOOK_URL}
-  s3:
-    uploadsBucket:
-      name: ${env:UPLOAD_BUCKET}
-      corsConfiguration:
-        CorsRules:
-          - AllowedOrigins: ['*']
-            AllowedMethods: [PUT]
-            AllowedHeaders: ["*"]
-            MaxAge: 3000
+
+  environment:
+    DB_HOST: ${env:DB_HOST_RDS}
+    DB_PORT: ${env:DB_PORT, '5432'}
+    DB_NAME: ${env:DB_NAME}
+    DB_USER: ${env:DB_USER_RDS}
+    DB_PASSWORD: ${env:DB_PASSWORD_RDS}
+
+    UPLOAD_BUCKET: ${env:UPLOAD_BUCKET_RDS}
+
+    N8N_WEBHOOK_URL: ${env:N8N_WEBHOOK_URL, ''}
+
   iam:
     role:
       statements:
-          - Effect: Allow
-            Action: [s3:PutObject, s3:GetObject]
-            Resource: arn:aws:s3:::${env:UPLOAD_BUCKET}/uploads/*
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+          Resource:
+            - arn:aws:s3:::${env:UPLOAD_BUCKET_RDS}/uploads/*
+
 package:
   patterns:
     - '!node_modules/**'
@@ -53,26 +56,104 @@ package:
     - '!test_*.py'
 
 functions:
-  processCsv:
-    handler: lambdas/process_csv/handler.py
-    timeout: 300
-    memorySize: 512
-    events:
-      - s3:
-          bucket: uploadsBucket
-          event: s3:ObjectCreated:*
-          rules:
-            - prefix: uploads/
-            - suffix: .csv
+
+  # --------------------------------------------------
+  # Generate presigned S3 upload URL
+  # --------------------------------------------------
+
   getUploadUrl:
-    handler: lambdas/get_upload_url/handler.py
+    handler: lambdas/get_upload_url/handler.handler
     timeout: 15
+
     events:
       - httpApi:
           path: /upload-url
           method: get
 
-outputs:
-  UploadEndpoint:
-    Value:
-      Fn::Sub: "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/upload-url"
+
+  # --------------------------------------------------
+  # Process uploaded CSV
+  # --------------------------------------------------
+
+  processCsv:
+    handler: lambdas/process_csv/handler.handler
+    timeout: 300
+    memorySize: 512
+
+
+
+# ----------------------------------------------------
+# S3 Bucket
+# ----------------------------------------------------
+
+resources:
+
+  Resources:
+
+    UploadsBucket:
+      Type: AWS::S3::Bucket
+
+      DeletionPolicy: Retain
+
+      Properties:
+
+        BucketName: ${env:UPLOAD_BUCKET_RDS}
+
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+
+        CorsConfiguration:
+          CorsRules:
+
+            - AllowedOrigins:
+                - '*'
+
+              AllowedMethods:
+                - PUT
+                - GET
+
+              AllowedHeaders:
+                - '*'
+
+        NotificationConfiguration:
+          LambdaConfigurations:
+            - Event: s3:ObjectCreated:*
+              Filter:
+                S3Key:
+                  Rules:
+                    - Name: prefix
+                      Value: uploads/
+                    - Name: suffix
+                      Value: .csv
+              Function: !GetAtt ProcessCsvLambdaFunction.Arn
+
+    ProcessCsvInvokePermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        FunctionName: !GetAtt ProcessCsvLambdaFunction.Arn
+        Action: lambda:InvokeFunction
+        Principal: s3.amazonaws.com
+        SourceArn: !GetAtt UploadsBucket.Arn
+
+
+# ----------------------------------------------------
+# CloudFormation Outputs
+# ----------------------------------------------------
+
+  Outputs:
+
+    UploadEndpoint:
+      Description: Presigned upload URL API endpoint
+
+      Value:
+        Fn::Sub: >-
+          https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/upload-url
+
+    UploadsBucketName:
+      Description: S3 bucket used for CSV uploads
+
+      Value:
+        Ref: UploadsBucket

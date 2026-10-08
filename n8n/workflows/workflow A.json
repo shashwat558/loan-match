@@ -3,7 +3,7 @@
   "nodes": [
     {
       "parameters": {
-        "jsCode": "const crypto = require('crypto');\nconst text = ($json.text || '').slice(0, 8000);\n\nif (text.length < 200) return [];\n\nconst system = `You extract personal loan products from web page text.\nReturn ONLY JSON: {\"products\":[{...}]}. Rules:\n- One object per distinct personal loan product. Max 5. Never invent values.\n- If the page is a blog, news article or not about a specific loan offer, return {\"products\":[]}.\n- Fields: product_name (string), interest_rate (number, lowest annual % stated, else null),\n  min_income (number, monthly INR, else null), min_credit_score (integer, else null),\n  max_credit_score (integer, else null), min_age (integer, else null), max_age (integer, else null),\n  employment_status (array using ONLY: \"salaried\",\"self-employed\",\"business\"; null if not stated),\n  criteria_text (string, the eligibility wording copied briefly, max 300 chars).\n- Convert yearly income to monthly. Map \"self employed professional\" to \"self-employed\"; \"business owner\" or \"entrepreneur\" to \"business\".\n- If a value is not clearly stated, use null.`;\n\nreturn {\n  json: {\n    source: $json.source,\n    source_url: $json.source_url,\n    criteria_hash: crypto.createHash('sha256').update(text).digest('hex'),\n    system,\n    user: text,\n  },\n};"
+        "jsCode": "const crypto = require('crypto');\n\nconst text = ($json.text || '').slice(0, 15000);\n\nif (text.length < 500) {\n  return [];\n}\n\nconst system = `\nYou are a financial-product data extraction system.\n\nYour job is to extract REAL personal loan products explicitly described\nin the supplied webpage text.\n\nReturn ONLY valid JSON:\n\n{\n  \"products\": [\n    {\n      \"product_name\": \"string\",\n      \"interest_rate\": number | null,\n      \"min_income\": number | null,\n      \"min_credit_score\": integer | null,\n      \"max_credit_score\": integer | null,\n      \"min_age\": integer | null,\n      \"max_age\": integer | null,\n      \"employment_status\": [\"salaried\", \"self-employed\", \"business\"] | null,\n      \"criteria_text\": \"string\"\n    }\n  ]\n}\n\nRULES:\n\n1. Extract only products actually described in the text.\n2. Never invent or estimate a value.\n3. If a value is not explicitly stated, return null.\n4. Search the ENTIRE supplied text before returning null.\n5. Do not combine eligibility requirements from different products.\n6. Do not treat generic educational/blog content as a loan product.\n7. Maximum 5 products per page.\n8. interest_rate must be the explicitly stated annual interest rate.\n9. Convert annual income to monthly income when necessary.\n10. \"Self employed professional\" → \"self-employed\".\n11. \"Business owner\" or \"entrepreneur\" → \"business\".\n12. criteria_text should contain the relevant eligibility wording,\n    maximum 300 characters.\n13. Do not hallucinate values.\n\nSOURCE:\n${$json.source}\n\nURL:\n${$json.source_url}\n`;\n\nreturn {\n  json: {\n    source: $json.source,\n    source_url: $json.source_url,\n    title: $json.title,\n    criteria_hash: crypto\n      .createHash('sha256')\n      .update(text)\n      .digest('hex'),\n    system,\n    user: text\n  }\n};"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -16,7 +16,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const domains = ['sbi.bank.in', 'bankbazaar.com', 'paisabazaar.com'];\nreturn domains.map(d => ({ json: { domain: d } }));"
+        "jsCode": "const domains = [\n  'sbi.bank.in',\n  'hdfcbank.com',\n  'icicibank.com',\n  'axisbank.com',\n  'kotak.com',\n  'bankbazaar.com',\n  'paisabazaar.com'\n];\n\nreturn domains.map(d => ({\n  json: { domain: d }\n}));"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -72,7 +72,7 @@
           "parameters": [
             {
               "name": "Authorization",
-              "value": "Bearer gedoEjLIbv9Ld"
+              "value": "Bearer "
             }
           ]
         },
@@ -120,7 +120,7 @@
           "parameters": [
             {
               "name": "Authorization",
-              "value": "Bearer a2d98578-0992-4726-b0a1-462a8eb352f9"
+              "value": ""
             },
             {
               "name": "x-api-key",
@@ -130,7 +130,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={   \"query\": \"personal loan interest rate eligibility minimum income credit score\",   \"type\": \"auto\",   \"numResults\": 3,   \"includeDomains\": [\"{{ $json.domain }}\"],   \"contents\": { \"text\": { \"maxCharacters\": 8000 } } }",
+        "jsonBody": "={\n  \"query\": \"personal loan products eligibility interest rate minimum income credit score age\",\n  \"type\": \"auto\",\n  \"numResults\": 8,\n  \"includeDomains\": [\"{{ $json.domain }}\"],\n  \"contents\": {\n    \"text\": {\n      \"maxCharacters\": 12000\n    }\n  }\n}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -248,7 +248,7 @@
     "executionOrder": "v1",
     "binaryMode": "separate"
   },
-  "versionId": "eacd1321-249c-4de8-8f0e-6d36c4a80f5c",
+  "versionId": "80782560-c797-4cd2-805f-f7b81bba80c9",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "30cef0ee38c4b2942281c82c0b9c24fe60e29ba5193189a7755c4f65a576681d"

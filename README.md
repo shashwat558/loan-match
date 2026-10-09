@@ -64,9 +64,15 @@ psql "host=<RDS_HOST> port=5432 dbname=loan_engine user=loan_user sslmode=requir
 
 ### 2. `.env`
 
-Copy these keys into the repo-root `.env` (values are per-environment):
+Copy `.env.example` to repo-root `.env` and fill values (per-environment):
 
 ```bash
+cp .env.example .env
+```
+
+```bash
+# AWS / Serverless deploy (serverless.yml)
+AWS_REGION=ap-south-1
 DB_HOST_RDS=<rds-endpoint>.ap-south-1.rds.amazonaws.com
 DB_PORT=5432
 DB_NAME=loan_engine
@@ -75,7 +81,13 @@ DB_PASSWORD_RDS=<rds-password>
 UPLOAD_BUCKET_RDS=<new-bucket-name>        # created on deploy, must be globally unique
 N8N_WEBHOOK_URL=https://<your-tunnel>/webhook/loan-match
 N8N_WEBHOOK_SECRET=<random-32-bytes>       # shared secret: Lambda → B → C (see below)
-AWS_REGION=ap-south-1
+# n8n docker (docker-compose.yml) + local Postgres
+TIMEZONE=Asia/Kolkata
+N8N_ENCRYPTION_KEY=<random-32-bytes>       # n8n credential encryption, `openssl rand -hex 16`
+WEBHOOK_URL=https://<your-tunnel>          # public URL n8n uses to build webhook URLs
+DB_USER=loan_user                          # local Postgres only (compose)
+DB_PASSWORD=<local-password>               # local Postgres only (compose)
+# DB_NAME reused for both RDS and local Postgres
 # Local-dev leftovers (Lambda ignores these; tests use them):
 DB_HOST=localhost
 UPLOAD_BUCKET=<local-dev-bucket>

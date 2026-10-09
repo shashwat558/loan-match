@@ -99,10 +99,32 @@ functions:
 
 
 # ----------------------------------------------------
-# S3 Bucket
+# CloudFormation Resources
 # ----------------------------------------------------
+# Cost note (why RDS/SES look the way they do):
+# - The assignment asks for Lambda + RDS for PostgreSQL + SES, but also says
+#   "you are not expected to incur cloud costs" and "local deployment is
+#   acceptable". So the DEFAULT deploy stays zero-cost: S3 + Lambda + HTTP API
+#   + SES sender identity (SES identities are free; mail is pay-per-mail).
+# - RDS is OPT-IN via CREATE_RDS=true (default 'false'). A db.t4g.micro with
+#   20 GB gp2 is free-tier eligible but still bills if left running outside
+#   free tier / after 12 months — enable it only when you want the stack to
+#   own the database instead of the manual RDS from README §1.
+#   Manual path (default): create Postgres yourself, apply sql/schema.sql +
+#   sql/seed_products.sql, put the endpoint in DB_HOST_RDS (see README).
+#   Managed path: CREATE_RDS=true serverless deploy --stage dev
+#   (requires DB_USER_RDS / DB_PASSWORD_RDS / DB_NAME in .env), then apply
+#   sql/schema.sql + sql/seed_products.sql to the new endpoint from Outputs.
+# - SES sending happens from n8n workflow C (AWS SES node), not Lambda —
+#   SesEmailIdentity only verifies the sender so C's sends are accepted.
+#   Verify the inbox side too when SES is in sandbox (recipient must verify).
 
 resources:
+
+  Conditions:
+    CreateRDS: !Equals
+      - ${env:CREATE_RDS, 'false'}
+      - 'true'
 
   Resources:
 
@@ -154,6 +176,57 @@ resources:
         Principal: s3.amazonaws.com
         SourceArn: !GetAtt UploadsBucket.Arn
 
+    # ---------------- SES (always deployed, free) ----------------
+
+    SesEmailIdentity:
+      Type: AWS::SES::EmailIdentity
+      Properties:
+        EmailIdentity: ${env:SES_SENDER_EMAIL, 'jainshashwat528@gmail.com'}
+        # After deploy, SES sends a verification mail to this address — click it.
+        # In SES sandbox, every RECIPIENT must also verify; request production
+        # access to mail unverified addresses.
+
+    # ---------------- RDS (opt-in: CREATE_RDS=true) ----------------
+    # Demo-grade settings match the current manual RDS in README (publicly
+    # reachable so the non-VPC Lambdas + local n8n can connect). For anything
+    # beyond a demo: private subnets, Lambda in the VPC (provider.vpc),
+    # SG allowing 5432 only from the Lambda SG, Secrets Manager for the
+    # password — see README "Known Limitations".
+
+    LoanEngineDBSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Condition: CreateRDS
+      Properties:
+        GroupDescription: loan-engine demo Postgres access (5432 open — demo only)
+        SecurityGroupIngress:
+          - IpProtocol: tcp
+            FromPort: 5432
+            ToPort: 5432
+            CidrIp: 0.0.0.0/0 # WARNING: demo only; restrict to Lambda/VPN IPs in prod
+
+    LoanEnginePostgres:
+      Type: AWS::RDS::DBInstance
+      Condition: CreateRDS
+      DeletionPolicy: Snapshot # keep a final snapshot on stack delete (Retain if you prefer)
+      Properties:
+        DBInstanceIdentifier: ${self:service}-${opt:stage, 'dev'}-postgres
+        Engine: postgres
+        EngineVersion: '16.3'
+        DBInstanceClass: db.t4g.micro # free-tier eligible; falls back to db.t3.micro if unavailable
+        AllocatedStorage: '20'
+        StorageType: gp2
+        StorageEncrypted: true
+        MultiAZ: false
+        BackupRetentionPeriod: 0 # demo: no automated backups (no snapshot storage cost)
+        DeleteAutomatedBackups: true
+        DeletionProtection: false
+        PubliclyAccessible: true # required while Lambdas run outside a VPC (demo)
+        DBName: ${env:DB_NAME}
+        MasterUsername: ${env:DB_USER_RDS}
+        MasterUserPassword: ${env:DB_PASSWORD_RDS} # requires DB_PASSWORD_RDS in .env when CREATE_RDS=true
+        VPCSecurityGroups:
+          - !Ref LoanEngineDBSecurityGroup
+
 
 # ----------------------------------------------------
 # CloudFormation Outputs
@@ -173,3 +246,15 @@ resources:
 
       Value:
         Ref: UploadsBucket
+
+    SesSenderIdentity:
+      Description: SES verified sender identity (workflow C mails from this)
+
+      Value:
+        Ref: SesEmailIdentity
+
+    RdsEndpoint:
+      Condition: CreateRDS
+      Description: Postgres endpoint (only when CREATE_RDS=true). Use as DB_HOST_RDS.
+
+      Value: !GetAtt LoanEnginePostgres.Endpoint.Address

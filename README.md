@@ -53,12 +53,14 @@ flowchart LR
 
 ### 1. RDS
 
-Create a Postgres instance (Postgres 16+) and apply the schema + product seed:
+Default (zero-cost): create a Postgres instance yourself (Postgres 16+, e.g. RDS Free Tier or any managed Postgres) and apply the schema + product seed:
 
 ```bash
 psql "host=<RDS_HOST> port=5432 dbname=loan_engine user=loan_user sslmode=require" -f sql/schema.sql
 psql "host=<RDS_HOST> port=5432 dbname=loan_engine user=loan_user sslmode=require" -f sql/seed_products.sql
 ```
+
+Optional managed path: `serverless.yml` can create the database for you — set `CREATE_RDS=true` in `.env` (requires `DB_USER_RDS` / `DB_PASSWORD_RDS` / `DB_NAME`), then `serverless deploy --stage dev` provisions a `db.t4g.micro` 20 GB Postgres plus its security group and prints the endpoint as the `RdsEndpoint` output (use it as `DB_HOST_RDS`). Afterwards apply the two SQL files above to that endpoint. Default is `false` so a plain deploy incurs no database costs; the SES sender identity (`SesEmailIdentity`) is always created (free) — click its verification mail before workflow C can send.
 
 `seed_products.sql` is idempotent (`ON CONFLICT (product_name, source) DO UPDATE`) — it inserts the 4 curated products and is safe to re-run.
 
@@ -81,6 +83,8 @@ DB_PASSWORD_RDS=<rds-password>
 UPLOAD_BUCKET_RDS=<new-bucket-name>        # created on deploy, must be globally unique
 N8N_WEBHOOK_URL=https://<your-tunnel>/webhook/loan-match
 N8N_WEBHOOK_SECRET=<random-32-bytes>       # shared secret: Lambda → B → C (see below)
+SES_SENDER_EMAIL=you@gmail.com              # verified by SesEmailIdentity on deploy
+CREATE_RDS=false                            # true = stack creates RDS Postgres (billed); false = manual RDS
 # n8n docker (docker-compose.yml) + local Postgres
 TIMEZONE=Asia/Kolkata
 N8N_ENCRYPTION_KEY=<random-32-bytes>       # n8n credential encryption, `openssl rand -hex 16`

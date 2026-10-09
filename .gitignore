@@ -14,3 +14,5 @@ npm-debug.log*
 
 .serverless/
 *.csv
+test_get_upload_url.py
+test_process_csv.py

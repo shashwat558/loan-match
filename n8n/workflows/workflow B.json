@@ -5,6 +5,7 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "loan-match",
+        "authentication": "headerAuth",
         "options": {}
       },
       "type": "n8n-nodes-base.webhook",
@@ -44,6 +45,8 @@
       "parameters": {
         "method": "POST",
         "url": "https://divided-swipe-travel.ngrok-free.dev/webhook/notify",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "bodyParameters": {
           "parameters": [
@@ -66,8 +69,14 @@
         0
       ],
       "id": "2dc316b2-6ee8-4d09-8a10-5df99d6c24fa",
-      "name": "HTTP Request",
-      "executeOnce": true
+        "name": "HTTP Request",
+        "executeOnce": true,
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "XmaL0rrj1du8OL2j",
+            "name": "Header Auth account"
+          }
+        }
     },
     {
       "parameters": {
@@ -81,11 +90,11 @@
           "conditions": [
             {
               "id": "02de1b01-4372-44b6-a61d-2ec80944496c",
-              "leftValue": "={{ $json.product_id }}",
-              "rightValue": "",
+              "leftValue": "={{ $json.cached_eligible === null ? 'judge' : 'cached' }}",
+              "rightValue": "judge",
               "operator": {
                 "type": "string",
-                "operation": "notEmpty",
+                "operation": "equals",
                 "singleValue": true
               }
             }
@@ -105,7 +114,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const metas = $('Build LLM prompt').all();\nconst UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nconst pairs = [];\n\n$input.all().forEach((item, i) => {\n  const meta = metas[i].json;\n  let results = [];\n  try {\n    results = JSON.parse(item.json.choices[0].message.content).results || [];\n  } catch (e) {\n    return;   // bad JSON: no LLM matches for this product\n  }\n  for (const r of results) {\n    if (r.eligible === true && meta.idMap[r.id]) {\n      for (const uid of meta.idMap[r.id]) {\n        if (UUID.test(uid)) pairs.push({ user_id: uid, product_id: Number(meta.product_id) });\n      }\n    }\n  }\n});\n\nreturn [{ json: { pairs } }];   // always exactly one item"
+        "jsCode": "const metas = $('Build LLM prompt').all();\nconst UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nconst pairs = [];\nconst verdicts = [];\n\n$input.all().forEach((item, i) => {\n  const meta = metas[i].json;\n  const byId = {};\n  (meta.profiles || []).forEach((pr) => { byId[pr.id] = pr; });\n  let results = [];\n  try {\n    results = JSON.parse(item.json.choices[0].message.content).results || [];\n  } catch (e) {\n    return;   // bad JSON: no LLM matches for this product\n  }\n  for (const r of results) {\n    const pr = byId[r.id];\n    if (pr && typeof r.eligible === 'boolean') {\n      verdicts.push({ product_key: meta.product_key, product_id: Number(meta.product_id), income_band: pr.income_band, score_band: pr.score_band, employment: pr.employment, eligible: r.eligible });\n    }\n    if (r.eligible === true && meta.idMap[r.id]) {\n      for (const uid of meta.idMap[r.id]) {\n        if (UUID.test(uid)) pairs.push({ user_id: uid, product_id: Number(meta.product_id) });\n      }\n    }\n  }\n});\n\nreturn [{ json: { pairs, verdicts } }];   // always exactly one item"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -154,7 +163,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT p.product_id, p.product_name, p.criteria_text,\n       (ROUND(u.monthly_income / 25000) * 25000)::int AS income_band,\n       (ROUND(u.credit_score / 50.0) * 50)::int       AS score_band,\n       (CASE lower(trim(u.employment_status)) WHEN 'salaried professional' THEN 'salaried' WHEN 'self employed' THEN 'self-employed' WHEN 'self employed professional' THEN 'self-employed' WHEN 'self-employed professional' THEN 'self-employed' WHEN 'business owner' THEN 'business' WHEN 'entrepreneur' THEN 'business' ELSE lower(trim(u.employment_status)) END) AS employment,\n       array_agg(u.user_id)                           AS user_ids,\n       count(*)                                       AS users_in_profile\nFROM users u\nJOIN loan_products p ON p.is_active AND p.needs_llm_check\nWHERE u.batch_id = '{{ $('Webhook').first().json.body.batch_id }}'::uuid\n  AND (p.min_income       IS NULL OR u.monthly_income >= p.min_income)\n  AND (p.min_credit_score IS NULL OR u.credit_score  >= p.min_credit_score)\n  AND (p.max_credit_score IS NULL OR u.credit_score  <= p.max_credit_score)\n  AND (p.min_age          IS NULL OR u.age >= p.min_age)\n  AND (p.max_age          IS NULL OR u.age <= p.max_age)\n  AND (p.employment_status IS NULL OR (CASE lower(trim(u.employment_status)) WHEN 'salaried professional' THEN 'salaried' WHEN 'self employed' THEN 'self-employed' WHEN 'self employed professional' THEN 'self-employed' WHEN 'self-employed professional' THEN 'self-employed' WHEN 'business owner' THEN 'business' WHEN 'entrepreneur' THEN 'business' ELSE lower(trim(u.employment_status)) END) = ANY(p.employment_status))\nAND NOT ((p.min_income IS NULL OR u.monthly_income >= p.min_income * 1.2) AND (p.min_credit_score IS NULL OR u.credit_score >= p.min_credit_score + 25))\nGROUP BY p.product_id, p.product_name, p.criteria_text, 4, 5, 6\nORDER BY users_in_profile DESC\nLIMIT 40;",
+        "query": "SELECT p.product_id, p.product_name, p.criteria_text, p.criteria_hash,\n       (ROUND(u.monthly_income / 25000) * 25000)::int AS income_band,\n       (ROUND(u.credit_score / 50.0) * 50)::int       AS score_band,\n       (CASE lower(trim(u.employment_status)) WHEN 'salaried professional' THEN 'salaried' WHEN 'self employed' THEN 'self-employed' WHEN 'self employed professional' THEN 'self-employed' WHEN 'self-employed professional' THEN 'self-employed' WHEN 'business owner' THEN 'business' WHEN 'entrepreneur' THEN 'business' ELSE lower(trim(u.employment_status)) END) AS employment,\n       array_agg(u.user_id)                           AS user_ids,\n       count(*)                                       AS users_in_profile\nFROM users u\nJOIN loan_products p ON p.is_active AND p.needs_llm_check\nWHERE u.batch_id = '{{ $('Webhook').first().json.body.batch_id }}'::uuid\n  AND (p.min_income       IS NULL OR u.monthly_income >= p.min_income)\n  AND (p.min_credit_score IS NULL OR u.credit_score  >= p.min_credit_score)\n  AND (p.max_credit_score IS NULL OR u.credit_score  <= p.max_credit_score)\n  AND (p.min_age          IS NULL OR u.age >= p.min_age)\n  AND (p.max_age          IS NULL OR u.age <= p.max_age)\n  AND (p.employment_status IS NULL OR (CASE lower(trim(u.employment_status)) WHEN 'salaried professional' THEN 'salaried' WHEN 'self employed' THEN 'self-employed' WHEN 'self employed professional' THEN 'self-employed' WHEN 'self-employed professional' THEN 'self-employed' WHEN 'business owner' THEN 'business' WHEN 'entrepreneur' THEN 'business' ELSE lower(trim(u.employment_status)) END) = ANY(p.employment_status))\nAND NOT ((p.min_income IS NULL OR u.monthly_income >= p.min_income * 1.2) AND (p.min_credit_score IS NULL OR u.credit_score >= p.min_credit_score + 25))\nGROUP BY p.product_id, p.product_name, p.criteria_text, p.criteria_hash, 5, 6, 7\nORDER BY users_in_profile DESC\nLIMIT 40;",
         "options": {}
       },
       "type": "n8n-nodes-base.postgres",
@@ -175,7 +184,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const rows = $input.all().map(i => i.json);\n\nconst system = `You judge personal loan eligibility.\nReturn ONLY JSON: {\"results\":[{\"id\":\"p1\",\"eligible\":true}]}.\nRules: judge each profile ONLY against the criteria text and the profile fields given.\nIf the profile does not clearly satisfy the criteria, set eligible to false. Include every profile id.`;\n\nconst normEmp = (e) => {\n  const t = String(e || '').toLowerCase().trim();\n  const m = {'salaried professional':'salaried','self employed':'self-employed','self employed professional':'self-employed','self-employed professional':'self-employed','business owner':'business','entrepreneur':'business'};\n  return m[t] || t;\n};\n\nconst byProduct = {};\nfor (const r of rows) {\n  if (!byProduct[r.product_id]) {\n    byProduct[r.product_id] = { product_id: r.product_id, name: r.product_name, criteria: r.criteria_text, rows: [] };\n  }\n  byProduct[r.product_id].rows.push(r);\n}\n\nreturn Object.values(byProduct).map(p => {\n  const idMap = {};\n  const profiles = p.rows.map((r, i) => {\n    const id = 'p' + (i + 1);\n    idMap[id] = r.user_ids;\n    return { id, monthly_income: r.income_band, credit_score: r.score_band, employment: normEmp(r.employment) };\n  });\n  return { json: {\n    product_id: p.product_id,\n    system,\n    user: `Product: ${p.name}\\nCriteria: ${p.criteria}\\nProfiles: ${JSON.stringify(profiles)}`,\n    idMap,\n  }};\n});"
+        "jsCode": "const rows = $input.all().map(i => i.json);\n\nconst system = `You judge personal loan eligibility.\nReturn ONLY JSON: {\"results\":[{\"id\":\"p1\",\"eligible\":true}]}.\nRules: judge each profile ONLY against the criteria text and the profile fields given.\nIf the profile does not clearly satisfy the criteria, set eligible to false. Include every profile id.`;\n\nconst normEmp = (e) => {\n  const t = String(e || '').toLowerCase().trim();\n  const m = {'salaried professional':'salaried','self employed':'self-employed','self employed professional':'self-employed','self-employed professional':'self-employed','business owner':'business','entrepreneur':'business'};\n  return m[t] || t;\n};\n\nconst byProduct = {};\nfor (const r of rows) {\n  if (!byProduct[r.product_id]) {\n    byProduct[r.product_id] = { product_id: r.product_id, name: r.product_name, criteria: r.criteria_text, rows: [] };\n  }\n  byProduct[r.product_id].rows.push(r);\n}\n\nreturn Object.values(byProduct).map(p => {\n  const idMap = {};\n  const profiles = p.rows.map((r, i) => {\n    const id = 'p' + (i + 1);\n    idMap[id] = r.user_ids;\n    return { id, monthly_income: r.income_band, credit_score: r.score_band, employment: normEmp(r.employment), product_key: r.product_key, income_band: r.income_band, score_band: r.score_band };\n  });\n  return { json: {\n    product_id: p.product_id,\n    product_key: p.rows[0].product_key,\n    system,\n    user: `Product: ${p.name}\\nCriteria: ${p.criteria}\\nProfiles: ${JSON.stringify(profiles)}`,\n    idMap,\n  }};\n});"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -230,6 +239,102 @@
       ],
       "id": "47301ae3-1fb1-49ee-9ce9-663d0d27e652",
       "name": "Count total matches"
+    },
+    {
+      "parameters": {
+        "jsCode": "const profiles = $input.all().map((i) => i.json).map((r) => ({\n  product_id: r.product_id,\n  product_name: r.product_name,\n  criteria_text: r.criteria_text,\n  product_key: r.criteria_hash || ('product:' + r.product_id),\n  income_band: r.income_band,\n  score_band: r.score_band,\n  employment: r.employment,\n  user_ids: r.user_ids,\n}));\nreturn [{ json: { profiles } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        208
+      ],
+      "id": "53351dd0-e571-495b-b7a3-b587f33e3e4e",
+      "name": "Collect profiles"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT x.product_id, x.product_name, x.criteria_text, x.product_key,\n       x.income_band, x.score_band, x.employment, x.user_ids,\n       v.eligible AS cached_eligible\nFROM json_to_recordset('{{ JSON.stringify($json.profiles) }}'::json)\n  AS x(product_id bigint, product_name text, criteria_text text, product_key text,\n       income_band int, score_band int, employment text, user_ids uuid[])\nLEFT JOIN llm_verdicts v\n  ON v.product_key = x.product_key\n AND v.income_band = x.income_band\n AND v.score_band = x.score_band\n AND v.employment = x.employment;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        896,
+        208
+      ],
+      "id": "137e8cfb-a1a8-4491-9f2e-da8fa5b8bdc6",
+      "name": "Lookup verdict cache",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "zPmpAwiR0hfaBlad",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const pairs = [];\nfor (const item of $input.all()) {\n  const r = item.json || {};\n  if (r.cached_eligible === true && Array.isArray(r.user_ids)) {\n    for (const uid of r.user_ids) pairs.push({ user_id: uid, product_id: Number(r.product_id) });\n  }\n}\nreturn [{ json: { pairs } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        208
+      ],
+      "id": "84bc0325-45ed-4f8d-b466-6bb0a8aff0a4",
+      "name": "Pairs from cache"
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1792,
+        -416
+      ],
+      "id": "1bf6b932-e305-40fa-8bdf-526374ec6607",
+      "name": "Merge pairs"
+    },
+    {
+      "parameters": {
+        "jsCode": "const pairs = [];\nfor (const item of $input.all()) {\n  const p = item.json && item.json.pairs;\n  if (Array.isArray(p)) pairs.push(...p);\n}\nreturn [{ json: { pairs } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2016,
+        -416
+      ],
+      "id": "512441d9-e9d9-41af-b02f-c705fbfda636",
+      "name": "Flatten pairs"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO llm_verdicts (product_key, product_id, income_band, score_band, employment, eligible)\nSELECT x.product_key, x.product_id, x.income_band, x.score_band, x.employment, x.eligible\nFROM json_to_recordset('{{ JSON.stringify($json.verdicts) }}'::json)\n  AS x(product_key text, product_id bigint, income_band int, score_band int, employment text, eligible boolean)\nON CONFLICT (product_key, income_band, score_band, employment)\nDO UPDATE SET eligible = EXCLUDED.eligible, product_id = EXCLUDED.product_id, decided_at = now();",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1568,
+        -416
+      ],
+      "id": "22498326-54a5-42f9-8ba0-b0d73fe00e2c",
+      "name": "Store verdicts",
+      "credentials": {
+        "postgres": {
+          "id": "zPmpAwiR0hfaBlad",
+          "name": "Postgres account"
+        }
+      }
     }
   ],
   "pinData": {},
@@ -267,7 +372,40 @@
         ],
         [
           {
-            "node": "Count total matches",
+            "node": "Pairs from cache",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pairs from cache": {
+      "main": [
+        [
+          {
+            "node": "Merge pairs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge pairs": {
+      "main": [
+        [
+          {
+            "node": "Flatten pairs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flatten pairs": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query2",
             "type": "main",
             "index": 0
           }
@@ -278,7 +416,12 @@
       "main": [
         [
           {
-            "node": "Execute a SQL query2",
+            "node": "Merge pairs",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Store verdicts",
             "type": "main",
             "index": 0
           }
@@ -319,6 +462,28 @@
       ]
     },
     "Fetch LLM candidates": {
+      "main": [
+        [
+          {
+            "node": "Collect profiles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect profiles": {
+      "main": [
+        [
+          {
+            "node": "Lookup verdict cache",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup verdict cache": {
       "main": [
         [
           {

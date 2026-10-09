@@ -255,6 +255,26 @@ ALTER TABLE ONLY public.users
 
 
 --
+-- LLM verdict cache (see sql/migrations/001_llm_verdicts.sql).
+-- IF NOT EXISTS so re-applying the schema never fails.
+--
+
+CREATE TABLE IF NOT EXISTS public.llm_verdicts (
+    product_key text NOT NULL,
+    product_id bigint NOT NULL REFERENCES public.loan_products(product_id) ON DELETE CASCADE,
+    income_band integer NOT NULL,
+    score_band integer NOT NULL,
+    employment text NOT NULL,
+    eligible boolean NOT NULL,
+    decided_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT uq_verdict UNIQUE (product_key, income_band, score_band, employment)
+);
+
+CREATE INDEX IF NOT EXISTS idx_verdicts_lookup
+    ON public.llm_verdicts USING btree (product_key, income_band, score_band, employment);
+
+
+--
 -- PostgreSQL database dump complete
 --
 

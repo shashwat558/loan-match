@@ -10,6 +10,7 @@ services:
       - TZ=${TIMEZONE}
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
       - WEBHOOK_URL=${WEBHOOK_URL}
+      - N8N_WEBHOOK_SECRET=${N8N_WEBHOOK_SECRET}
       - N8N_HOST=localhost
       - N8N_PORT=5678
       - N8N_PROTOCOL=http

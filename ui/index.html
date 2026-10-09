@@ -129,13 +129,38 @@ uploadBtn.addEventListener("click", async () => {
     });
     if (put.status !== 200) throw new Error("Upload failed (HTTP " + put.status + ").");
 
-    showStatus("Upload complete. Batch ID: " + batch_id, true);
+    await pollStatus(batch_id);
   } catch (e) {
     showStatus("");
     showError(e.message || "Upload failed.");
     uploadBtn.disabled = false;
   }
 });
+
+async function pollStatus(batch_id) {
+  const started = Date.now();
+  const timeoutMs = 12 * 60 * 1000;
+  while (Date.now() - started < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 5000));
+    const res = await fetch(API_URL + "/status/" + batch_id);
+    if (!res.ok) throw new Error("Could not get batch status (HTTP " + res.status + ").");
+    const s = await res.json();
+    if (s.status === "done") {
+      showStatus("Done: " + s.inserted_rows + " inserted, " + s.skipped_rows +
+        " skipped out of " + s.total_rows + " rows. Batch ID: " + batch_id, true);
+      uploadBtn.disabled = false;
+      return;
+    }
+    if (s.status === "failed") {
+      throw new Error("Processing failed: " + (s.error_message || "unknown error"));
+    }
+    showStatus("Processing… status: " + s.status + " (" +
+      s.inserted_rows + " inserted so far)");
+  }
+  showStatus("Still processing after 12 minutes. Batch ID: " + batch_id +
+    " — check back later.", true);
+  uploadBtn.disabled = false;
+}
 </script>
 </body>
 </html>

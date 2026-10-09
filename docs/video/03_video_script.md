@@ -1,0 +1,38 @@
+# loan-match — Video Script (7–8 minutes, speakable)
+
+Read the SAY column aloud, first person. Short lines, natural sentences. "⏸ PAUSE" means stop talking and wait for the thing to finish.
+
+## Segments
+
+| Time | ON SCREEN | SAY |
+|---|---|---|
+| 0:00–0:30 | Title slide: "loan-match — serverless loan-eligibility pipeline". Then the UI page with a CSV ready. | "Hi, I'm Shashwat, and this is loan-match. Banks sit on two disconnected piles of data: thousands of loan applicants in spreadsheets, and loan offers scattered across the web with eligibility rules buried in prose. loan-match connects them. You drop in a CSV of applicants, and out come matched applicants with emails already sent. Everything runs on serverless AWS plus n8n, and the whole demo you're about to see is live — no mocks. Let me show you how it's wired." |
+| 0:30–1:30 | Architecture diagram (the Mermaid chart, rendered). Cursor traces browser → API → S3 → Lambda → RDS → n8n → SES. | "Here's the map. The browser never uploads through the API, because API Gateway chokes on big files. Instead, the API mints a five-minute signed S3 link, the browser PUTs the CSV straight to S3, and that arrival event wakes up the processing Lambda. The Lambda validates ten thousand rows into Postgres, then pings n8n. Workflow B matches users to products, first in SQL, then with an AI judge for the tricky ones. Workflow C emails the winners through SES. And off to the side, workflow A runs daily, reading the web to keep the product catalog fresh. ⏸ PAUSE — let the diagram sit for three seconds." |
+| 1:30–1:50 | n8n, workflow A open. Click "Schedule Trigger". | "Workflow A is the crawler. It starts with the Schedule Trigger, firing daily at six PM. [Click.]" |
+| 1:50–2:05 | Click "Domains". | "Domains emits just three finance sites — SBI, BankBazaar, Paisabazaar — so we crawl known sources, not the whole web. [Click.]" |
+| 2:05–2:20 | Click "HTTP Request" (Exa). | "This HTTP Request asks Exa search for personal-loan pages on each domain, three hits each, with eight thousand characters of clean page text. Clean text, not HTML — that's the whole point. [Click.]" |
+| 2:20–2:30 | Click "Code in JavaScript1". | "This Code node drops any page under two hundred characters — menus and dead pages would only waste paid AI calls. [Click.]" |
+| 2:30–2:45 | Click "Prepare Prompt". | "Prepare Prompt builds a strict instruction — return only JSON, max five products, never invent values — plus a SHA hash of the page for change detection. [Click.]" |
+| 2:45–3:00 | Click "HTTP Request1" (Groq), then "Code in JavaScript3". | "Groq turns prose into typed fields — rates, thresholds, ages. Then this Code node sanitizes everything: bad rates are dropped, employment words are mapped onto a closed list. We never trust AI output directly. [Click, click.]" |
+| 3:00–3:10 | Click "Execute a SQL query". | "And this upserts each product on name-plus-source, so re-crawls update instead of duplicating. That's the catalog workflow B matches against. [Click.]" |
+| 3:10–3:25 | Switch to workflow B. Click "Webhook". | "Workflow B is the matcher. It starts at this Webhook, which the Lambda calls with the batch ID the moment ingestion finishes. [Click.]" |
+| 3:25–3:45 | Click "Execute a SQL query". | "Stage one is pure SQL: one join of the batch against active products on six bounds, scored as a hundred minus the interest rate, keeping the top three per user. On our ten-thousand-user file that produced over seventeen thousand matches in milliseconds — no loops, no AI. [Click.]" |
+| 3:45–3:55 | Click "Code in JavaScript3", then "Fetch LLM candidates". | "This Code node counts the SQL matches. Then Fetch LLM candidates groups the remaining users into bands — income to twenty-five K, score to fifty — capped at forty profiles. Ten thousand users collapse into tens of rows. [Click, click.]" |
+| 3:55–4:05 | Click "If". | "The If node checks whether any flagged product survived. Empty means skip the AI entirely — no paid calls for nothing. [Click.]" |
+| 4:05–4:20 | Click "Build LLM prompt", "HTTP Request1", "Code in JavaScript2". | "Build LLM prompt groups profiles per product with throwaway labels, so the model never sees real user IDs. Groq judges each profile against the criteria text. And this Code node keeps only eligible verdicts with valid UUIDs — a hallucinating model cannot invent users. [Click, click, click.]" |
+| 4:20–4:30 | Click "Execute a SQL query2", then "HTTP Request". | "Verdicts land back in the matches table, and this last node hands the batch to workflow C. [Click, click.]" |
+| 4:30–4:45 | Switch to workflow C. Click "Webhook", "Execute a SQL query". | "Workflow C notifies. Its webhook receives the batch, and this query picks the top three users by match count — a demo cap, not a product limit. [Click, click.]" |
+| 4:45–5:00 | Click "Email_template", "Send an email", "Execute a SQL query1". | "Email_template builds one personal email per user, routed to test inboxes we control — never real applicants. SES sends it, and only then do we mark those matches notified, so a failed send retries instead of vanishing. [Click, click, click.]" |
+| 5:00–5:20 | The UI page (localhost). CSV already chosen, name and size visible. Click Upload. | "Now the live run. Ten thousand real applicants, one click. ⏸ PAUSE — watch the status line: requesting the upload link… uploading… and there's the batch ID. The file went straight to S3." |
+| 5:20–5:50 | CloudWatch Logs for processCsv (or a terminal tailing it). | "While S3 fires the processor, here are its logs: claimed the batch, streamed and validated ten thousand rows in one-thousand-row chunks, finished done, ten thousand inserted, and pinged n8n. ⏸ PAUSE — wait for the done line before moving on." |
+| 5:50–6:20 | n8n Executions: open B's run, then C's run. | "And here it is moving: workflow B ran — SQL matches first, then the AI verdicts — and handed off to C, which just sent three emails. ⏸ PAUSE — let both executions show green." |
+| 6:20–6:40 | Terminal: `SELECT match_stage, count(*) FROM matches GROUP BY 1;` | "Proof in the database: roughly nineteen thousand SQL matches and several hundred AI-judged ones. Let me run the count query live. ⏸ PAUSE — wait for the result rows." |
+| 6:40–7:00 | Gmail test inbox, open the newest email. | "And proof in the inbox: 'You may qualify for three personal loan offers,' with the products, rates, and sources listed. End to end, one click to inbox." |
+| 7:00–7:30 | Back to diagram (or a slide with the numbers). | "That was the Treasure Hunt in action: stage one, SQL top-three, seventeen thousand plus matches for free. Stage two, banding, squeezed ten thousand users into at most forty profiles. Stage three, a handful of AI calls judged them all. Total AI cost for the batch: single digits of calls, not thousands." |
+| 7:30–8:00 | Closing slide: limitations (one line each). | "Honestly, four caveats. The demo database is public with an open security group — production would be a private VPC. The crawler covers only three domains, so the catalog is thin. Banded verdicts are approximations at the edges. And my tunnel URL changes on restart, which silently breaks the webhook until I redeploy. All documented in the repo. Thanks for watching — the code, the seed data, and these docs are all in the repository." |
+
+## Delivery notes
+
+- Speak the node names exactly ("Code in JavaScript3", "Execute a SQL query") — reviewers check them against the JSON.
+- Never show `.env`, API keys, or credential screens. Blur or cut if a secret flashes.
+- If any live step hangs past its pause, cut to the fallback (see `04_recording_checklist.md`) and keep talking.

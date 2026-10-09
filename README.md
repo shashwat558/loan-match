@@ -10,17 +10,19 @@ flowchart LR
     API --> GUV["Lambda: get_upload_url"]
     GUV -->|presigned PUT URL| Browser
     Browser -->|PUT CSV directly| S3["S3 uploads bucket"]
+    Browser -->|GET /status/{batch_id} poll| API
+    API --> GS["Lambda: get_status"]
     S3 -->|s3:ObjectCreated: uploads/*.csv| PC["Lambda: process_csv"]
     PC -->|validate + bulk upsert| RDS[("RDS Postgres")]
-    PC -->|batch_id + valid_rows| NB["n8n B: matcher (webhook)"]
+    PC -->|batch_id + valid_rows + secret| NB["n8n B: matcher (webhook)"]
     A["n8n A: crawler (schedule)"] -->|Exa text + Groq JSON| RDS
     NB --> RDS
-    NB -->|match batches| NC["n8n C: notifier (webhook)"]
+    NB -->|match batches + secret| NC["n8n C: notifier (webhook)"]
     NC --> SES["AWS SES"]
     SES -->|email| User["Applicant inbox"]
 ```
 
-**Flow in words:** the browser gets a presigned S3 URL from `get_upload_url`, uploads the CSV straight to S3, the S3 event fires `process_csv` which streams/parses/validates rows into RDS and pings n8n **B**; B matches users to products (SQL, then Groq for flagged products) and hands matches to n8n **C**, which emails applicants via SES. Separately, n8n **A** runs daily, extracting loan products from the web (Exa) into structured rows (Groq) to keep the catalog fresh.
+**Flow in words:** the browser gets a presigned S3 URL from `get_upload_url`, uploads the CSV straight to S3, then polls `GET /status/{batch_id}` (served by the `getStatus` Lambda) until the batch shows `done` with counts. The S3 arrival event fires `process_csv` which streams/parses/validates rows into RDS and pings n8n **B** with the batch plus a shared webhook secret; B matches users to products (SQL, then Groq for flagged products, with an LLM-verdict cache), hands matches plus the secret to n8n **C**, which emails applicants via SES. Separately, n8n **A** runs daily, extracting loan products from the web (Exa) into structured rows (Groq) to keep the catalog fresh.
 
 ## Setup and Deployment
 
@@ -56,6 +58,7 @@ DB_USER_RDS=loan_user
 DB_PASSWORD_RDS=<rds-password>
 UPLOAD_BUCKET_RDS=<new-bucket-name>        # created on deploy, must be globally unique
 N8N_WEBHOOK_URL=https://<your-tunnel>/webhook/loan-match
+N8N_WEBHOOK_SECRET=<random-32-bytes>       # shared secret: Lambda → B → C (see below)
 AWS_REGION=ap-south-1
 # Local-dev leftovers (Lambda ignores these; tests use them):
 DB_HOST=localhost
@@ -78,8 +81,9 @@ Put that URL + `/webhook/loan-match` into `N8N_WEBHOOK_URL`. Free tunnel URLs ro
 - **AWS SES:** Credentials → AWS → access key/secret of an IAM user allowed `ses:SendEmail`, region `ap-south-1`. Attach to the "Send an email" node in workflow C. Verify the sender identity in SES first.
 - **Header Auth for Exa:** Credentials → Header Auth → Name `Authorization`, Value `Bearer <EXA_KEY>` (also `x-api-key` where the workflow sets it). Used by workflow A's search node.
 - **Header Auth for Groq:** Credentials → Header Auth → Name `Authorization`, Value `Bearer <GROQ_KEY>`. Used by workflow A's extractor and B's judge. Never commit keys — the workflow JSON must reference credentials, not inline key strings.
+- **Header Auth for webhooks ("Header Auth account"):** Credentials → Header Auth → Name `X-Webhook-Secret`, Value = `N8N_WEBHOOK_SECRET` from `.env`. Attach it to the Webhook node in B **and** C, and to B's notify HTTP node (generic auth → Header Auth). `process_csv` sends the same value as a header, so only the Lambda can trigger B and only B can trigger C. Without it both webhooks answer 403.
 
-Import `n8n/workflows/workflow A.json`, `workflow B.json`, `workflow C.json` into n8n, attach the credentials above, and toggle each workflow **Active** (production webhook URLs only work when active; the Lambda calls `/webhook/...`, not `/webhook-test/...`).
+Import `n8n/workflows/workflow A.json`, `workflow B.json`, `workflow C.json` into n8n, attach the credentials above, and toggle each workflow **Active** (production webhook URLs only work when active; the Lambda calls `/webhook/...`, not `/webhook-test/...`). The n8n container also needs the secret: `docker-compose.yml` passes `N8N_WEBHOOK_SECRET` through, so restart n8n after changing it.
 
 ### 5. Deploy
 
@@ -88,6 +92,8 @@ serverless package --stage dev   # validates packaging (needs Docker for dockeri
 serverless deploy --stage dev    # creates bucket, Lambdas, S3 trigger, HTTP API
 ./scripts/wire_bucket.sh dev     # tops up S3 CORS MaxAgeSeconds (CFN can't set it) + re-asserts trigger
 ```
+
+Deployed routes: `GET /upload-url` (presigned link + batch row) and `GET /status/{batch_id}` (status plus `total/inserted/skipped` counts and `error_message`, backed by the `getStatus` Lambda — this is what the UI polls after uploading).
 
 Note the two-step bucket wiring: CloudFormation owns the bucket, its CORS origins/methods/headers, and the S3→Lambda notification; `wire_bucket.sh` adds only `MaxAgeSeconds` via the S3 API, because CloudFormation's EarlyValidation hook rejects that field (verified). Outputs include the `GET /upload-url` endpoint and the bucket name.
 
@@ -117,9 +123,10 @@ API Gateway payloads cap at ~10 MB with 29 s timeouts — our CSVs are ~1 MB per
 
 ### Treasure Hunt: three-stage matching (measured: 17,348 SQL matches)
 Matching 10,000 users × N products naively is a cross join; the pipeline narrows it in stages:
-- **Stage 1 — set-based SQL pre-filter:** one join (`income/score/age/employment` bounds, active products only), keeping the **top-3 per user** ordered by lowest interest rate, scored `100 − rate`. On the reference run this produced **17,348 SQL matches** without any row-by-row code.
-- **Stage 2 — banded profiles (thousands of users → at most 40):** users who hit `needs_llm_check` products are grouped by `(income_band 25k, score_band 50, employment)` in SQL. 10,000 scattered users collapse into a handful of profile rows, each carrying an array of user IDs.
-- **Stage 3 — one Groq call per flagged product:** the LLM judges each (profile × product) pair once from `criteria_text` instead of once per user — a few dozen calls instead of thousands. Verdicts fan back out to per-user `llm` rows (759 in the reference run).
+- **Stage 1 — set-based SQL pre-filter:** one join (`income/score/age/employment` bounds, active products only), keeping the **top-3 per user** ordered by lowest interest rate, scored `100 − rate`. Employment values are normalized first ("salaried professional" → `salaried`, "business owner" → `business`, etc.), and flagged (`needs_llm_check`) products join this stage too for clear fits — income ≥ 1.2× minimum and score ≥ minimum + 25. On the reference run this produced **17,348 SQL matches** without any row-by-row code.
+- **Stage 2 — banded profiles (thousands of users → at most 40):** users who hit `needs_llm_check` products but miss the clear-fit margins are grouped by `(income_band 25k, score_band 50, employment)` in SQL. 10,000 scattered users collapse into a handful of profile rows, each carrying an array of user IDs.
+- **Stage 3 — one Groq call per flagged product:** the LLM judges each (profile × product) pair once from `criteria_text` instead of once per user — a few dozen calls instead of thousands. Before calling, B checks the **`llm_verdicts` cache** (keyed on product hash + bands + employment); repeat batches reuse past verdicts and only unjudged profiles reach Groq. New verdicts (eligible *and* ineligible) are stored back. Verdicts fan back out to per-user `llm` rows (759 in the reference run).
+- The notify payload's `match_count` covers **both** stages (SQL inserts + LLM inserts), summed in the "Count total matches" node.
 
 ### Crawler: Exa for clean text, Groq for structured JSON, validated in code before saving
 Workflow A (daily schedule) searches constrained domains with Exa (clean page text beats raw HTML), asks Groq (`qwen3-27b`, temperature 0, `json_object` mode) for strictly-typed product JSON, then a Code node enforces the contract before Postgres: names trimmed, rates clamped to 1–50% (else dropped), employment mapped onto a closed vocabulary, a `criteria_hash` (sha256 of source text) stored for change detection, and upsert on `(product_name, source)` so re-crawls update instead of duplicating. Vague extractions (no usable numbers) are meant to be flagged `needs_llm_check` so they take the LLM matching path rather than the SQL one.
@@ -127,10 +134,17 @@ Workflow A (daily schedule) searches constrained domains with Exa (clean page te
 ### Notification: test aliases only, mark notified after SES success
 Workflow C resolves the batch's new matches, sends via SES, and only then marks them `notified`. During development all recipient addresses are test aliases — no real applicant is ever emailed from a dev run.
 
+### Webhook security: shared secret on both hops
+`process_csv` sends `X-Webhook-Secret` (from Lambda env `N8N_WEBHOOK_SECRET`) with every matcher call, and workflow B forwards it when calling C. Both Webhook nodes enforce it via a Header Auth credential holding the same value, so random internet traffic gets 403 instead of triggering runs. Rotate by changing `.env`, redeploying (Lambda env), and updating the n8n credential.
+
+### UI status polling: processing → done with counts
+After the S3 PUT returns 200, `ui/index.html` polls `GET /status/{batch_id}` every 5 seconds (12-minute cap) and shows live progress ("Processing… N inserted") then the final counts ("Done: X inserted, Y skipped") or the failure reason. The endpoint reads one `upload_batches` row and returns 400/404/200 for bad-id/unknown/known batches.
+
 ## Known Limitations (honest)
 
 - **RDS is publicly reachable with a wide-open security group for the demo.** For anything beyond a demo: private subnets, Lambda in the VPC (`provider.vpc`), security group allowing 5432 only from the Lambda SG, Secrets Manager instead of env-var passwords.
 - **The crawler yields few products** (3 domains × 3 results, one query). Aggregator domains often return no extractable offer, so catalog growth is slow; see the README's workflow-A notes for widening it.
 - **The banded LLM verdict is an approximation:** everyone in an `(income_band, score_band, employment)` bucket shares one verdict. Bands are coarse by design (cost), so edge users near a threshold can be misjudged either way.
 - **The tunnel URL changes on restart** (free tier). When it does, `N8N_WEBHOOK_URL` goes stale and batches record `webhook failed: 404` while staying `done` — update `.env` and redeploy.
-- **Passwords and webhook URLs live in `.env`/Lambda env**, and the deployed S3 bucket keeps `DeletionPolicy: Retain` — deleting the stack leaves the bucket (and its CSVs) behind by design; empty it first if you want it gone.
+- **Passwords, webhook URLs, and the webhook secret live in `.env`/Lambda env**, and the deployed S3 bucket keeps `DeletionPolicy: Retain` — deleting the stack leaves the bucket (and its CSVs) behind by design; empty it first if you want it gone.
+- **LLM verdict cache is keyed on product text hash** (`llm_verdicts`): changing a product's criteria orphans its old verdict rows (they stop matching lookups). Prune periodically: `DELETE FROM llm_verdicts WHERE decided_at < now() - interval '90 days';`

@@ -23,6 +23,7 @@ CHUNK_SIZE = 1000
 REQUIRED_COLUMNS = {"user_id", "email","name", "monthly_income", "credit_score", "employment_status", "age"}
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 N8N_WEBHOOK_URL = os.environ.get("N8N_WEBHOOK_URL")
+N8N_WEBHOOK_SECRET = os.environ.get("N8N_WEBHOOK_SECRET", "")
 
 def validate_row(row):
     """Return (clean_tuple, None) if valid, or (None, reason) if not."""
@@ -102,8 +103,11 @@ def trigger_n8n(batch_id, valid_rows):
         logger.warning("N8N_WEBHOOK_URL not set, skipping webhook")
         return
     payload = json.dumps({"batch_id": batch_id, "valid_rows": valid_rows}).encode()
+    headers = {"Content-Type": "application/json"}
+    if N8N_WEBHOOK_SECRET:
+        headers["X-Webhook-Secret"] = N8N_WEBHOOK_SECRET
     req = urllib.request.Request(
-        N8N_WEBHOOK_URL, data=payload, headers={"Content-Type": "application/json"}, method="POST"
+        N8N_WEBHOOK_URL, data=payload, headers=headers, method="POST"
     )
 
     try:

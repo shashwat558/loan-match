@@ -6,20 +6,36 @@ loan-match is a serverless loan-eligibility pipeline: users upload a CSV of appl
 
 ```mermaid
 flowchart LR
-    Browser["Browser (ui/index.html)"] -->|GET /upload-url| API["API Gateway (HTTP API)"]
-    API --> GUV["Lambda: get_upload_url"]
-    GUV -->|presigned PUT URL| Browser
-    Browser -->|PUT CSV directly| S3["S3 uploads bucket"]
-    Browser -->|GET /status/{batch_id} poll| API
-    API --> GS["Lambda: get_status"]
-    S3 -->|s3:ObjectCreated: uploads/*.csv| PC["Lambda: process_csv"]
-    PC -->|validate + bulk upsert| RDS[("RDS Postgres")]
-    PC -->|batch_id + valid_rows + secret| NB["n8n B: matcher (webhook)"]
-    A["n8n A: crawler (schedule)"] -->|Exa text + Groq JSON| RDS
-    NB --> RDS
-    NB -->|match batches + secret| NC["n8n C: notifier (webhook)"]
-    NC --> SES["AWS SES"]
-    SES -->|email| User["Applicant inbox"]
+    RDS[("RDS Postgres")]
+
+    Browser["Browser (ui/index.html)"]
+    API["API Gateway (HTTP API)"]
+    GUV["Lambda: get_upload_url"]
+    GS["Lambda: get_status"]
+    S3["S3 uploads bucket"]
+    PC["Lambda: process_csv"]
+    NA["n8n A: crawler (schedule)"]
+    NB["n8n B: matcher (webhook)"]
+    NC["n8n C: notifier (webhook)"]
+    SES["AWS SES"]
+    User["Applicant inbox"]
+
+    Browser -->|"GET /upload-url"| API
+    API --> GUV
+    GUV -->|"presigned PUT URL"| Browser
+    Browser -->|"PUT CSV directly"| S3
+    Browser -->|"poll GET /status/batch_id"| API
+    API --> GS
+    GS -->|"read batch status"| RDS
+    S3 -->|"ObjectCreated event, uploads prefix, csv suffix"| PC
+    PC -->|"validate and bulk upsert"| RDS
+    PC -->|"batch_id, valid_rows, secret"| NB
+    NA -->|"Exa text, Groq JSON"| RDS
+    NB -->|"SQL and LLM matches"| RDS
+    NB -->|"batch_id, secret"| NC
+    NC -->|"fetch matches, mark notified"| RDS
+    NC --> SES
+    SES -->|"email"| User
 ```
 
 **Flow in words:** the browser gets a presigned S3 URL from `get_upload_url`, uploads the CSV straight to S3, then polls `GET /status/{batch_id}` (served by the `getStatus` Lambda) until the batch shows `done` with counts. The S3 arrival event fires `process_csv` which streams/parses/validates rows into RDS and pings n8n **B** with the batch plus a shared webhook secret; B matches users to products (SQL, then Groq for flagged products, with an LLM-verdict cache), hands matches plus the secret to n8n **C**, which emails applicants via SES. Separately, n8n **A** runs daily, extracting loan products from the web (Exa) into structured rows (Groq) to keep the catalog fresh.
